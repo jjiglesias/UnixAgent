@@ -254,16 +254,16 @@ sub snmpscan_end_handler {
                     $snmp_table = $snmp_value->{TABLE_TYPE_NAME};
                     $snmp_condition_oid = $snmp_value->{CONDITION_OID};
                     $snmp_condition_value = $snmp_value->{CONDITION_VALUE};
-                    last LIST_TYPE if (defined $oid_condition && $oid_condition->{$snmp_value->{CONDITION_OID}} eq $snmp_value->{CONDITION_VALUE});
+                    last LIST_TYPE if (defined $oid_condition && $oid_condition->{$snmp_value->{CONDITION_OID}} =~ m/\Q$snmp_value->{CONDITION_VALUE})/;
                 }
                 
-                last LIST_SNMP if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} eq $snmp_condition_value);
+                last LIST_SNMP if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} =~ m/\Q$snmp_condition_value/);
                 $session->close;
                 $self->{snmp_session}=undef;
             }
         }
 
-        if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} eq $snmp_condition_value) {
+        if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} =~ m/\Q$snmp_condition_value/) {
             $oid_condition = $oid_condition->{$snmp_condition_oid};
             my $xmltags = $common->{xmltags};
             
