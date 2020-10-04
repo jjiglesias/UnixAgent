@@ -16,6 +16,7 @@ use warnings;
 
 use XML::Simple;
 use Digest::MD5;
+use Data::Dumper;
 
 sub new {
     my $name="snmpscan";   #Set the name of your module here
@@ -99,6 +100,8 @@ sub snmpscan_prolog_reader {
     
     $prolog = XML::Simple::XMLin( $prolog, ForceArray => ['OPTION', 'PARAM']);
 
+    $self->{snmp_type_hash} = {};
+
     for $option (@{$prolog->{OPTION}}){
         if ($option->{NAME} =~/snmp/i){
             $self->{doscans} = 1 ;
@@ -138,6 +141,19 @@ sub snmpscan_prolog_reader {
                         LABEL_NAME => $_->{LABEL_NAME},
                         OID => $_->{OID}
                     };
+
+                    if (!exists($self->{snmp_type_hash}{$_->{TABLE_TYPE_NAME}})) {
+                        $self->{snmp_type_hash}{$_->{TABLE_TYPE_NAME}} = {
+                            CONDITION_OID => $_->{CONDITION_OID},
+                            CONDITION_VALUE => $_->{CONDITION_VALUE},
+                            LABELS => []
+                        };
+                    }
+
+                    push @{$self->{snmp_type_hash}{$_->{TABLE_TYPE_NAME}}->{LABELS}},{
+                        LABEL_NAME => $_->{LABEL_NAME},
+                        OID => $_->{OID}
+                    };
                 }
         
                 # Creating the directory for xml if they don't yet exist
@@ -149,6 +165,8 @@ sub snmpscan_prolog_reader {
             }
         }
     }
+
+    $logger->debug("JJIR - snmp_type_hash: " .Dumper($self->{snmp_type_hash}));
 }
 
 sub snmpscan_end_handler {
@@ -247,14 +265,11 @@ sub snmpscan_end_handler {
                 $self->{snmp_community}=$comm->{NAME}; 
                 $self->{snmp_version}=$comm->{VERSION};
 
-                my $snmp_key = $self->{snmp_type_condition};
-
-                LIST_TYPE: foreach my $snmp_value (@$snmp_key) {
-                    $oid_condition = $session->get_request(-varbindlist => [$snmp_value->{CONDITION_OID}]);
-                    $snmp_table = $snmp_value->{TABLE_TYPE_NAME};
-                    $snmp_condition_oid = $snmp_value->{CONDITION_OID};
-                    $snmp_condition_value = $snmp_value->{CONDITION_VALUE};
-                    last LIST_TYPE if (defined $oid_condition && $oid_condition->{$snmp_value->{CONDITION_OID}} =~ m/\Q$snmp_value->{CONDITION_VALUE})/;
+                LIST_TYPE: foreach $snmp_table (keys %{$self->{snmp_type_hash}}) {
+                    $snmp_condition_oid = $self->{snmp_type_hash}{$snmp_table}->{CONDITION_OID};
+                    $snmp_condition_value = $self->{snmp_type_hash}{$snmp_table}->{CONDITION_VALUE};
+                    $oid_condition = $session->get_request(-varbindlist => [$snmp_condition_oid]);
+                    last LIST_TYPE if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} =~ m/\Q$snmp_condition_value/);
                 }
                 
                 last LIST_SNMP if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} =~ m/\Q$snmp_condition_value/);
@@ -274,29 +289,28 @@ sub snmpscan_end_handler {
             
             my $data;
 
-            my $snmp_infos = $self->{snmp_type_infos};
+            my $snmp_infos = $self->{snmp_type_hash}{$snmp_table}->{LABELS};
+            $logger->debug("JJIR - snmp_infos: " .Dumper($self->{snmp_infos}));
 
             foreach my $datas (@$snmp_infos) {
                 my $data_value = undef;
-                if($datas->{TABLE_TYPE_NAME} eq $snmp_table) {
-                    $data = $session->get_request(-varbindlist => [$datas->{OID}]);
-                    $data_value = $data->{$datas->{OID}};
-                    if(defined $data_value && $data_value =~ /^0x[0-9A-F]+$/i) {
-                        $data_value = substr $data_value, 2;
-                        my @split = unpack '(A2)*', $data_value;
-                        $data_value = uc(join ':', @split);
+                $data = $session->get_request(-varbindlist => [$datas->{OID}]);
+                $data_value = $data->{$datas->{OID}};
+                if(defined $data_value && $data_value =~ /^0x[0-9A-F]+$/i) {
+                    $data_value = substr $data_value, 2;
+                    my @split = unpack '(A2)*', $data_value;
+                    $data_value = uc(join ':', @split);
+                }
+                if(!defined $data_value) {
+                    my @table;
+                    $data = $session->get_table(-baseoid => $datas->{OID});
+                    foreach my $key (keys %{$data}) {
+                        push @table, $data->{$key};
                     }
-                    if(!defined $data_value) {
-                        my @table;
-                        $data = $session->get_table(-baseoid => $datas->{OID});
-                        foreach my $key (keys %{$data}) {
-                            push @table, $data->{$key};
-                        }
-                        $data_value = join ' - ', @table;
-                    }
-                    $xmltags->{$datas->{LABEL_NAME}}[0] = $data_value;
-                } 
-            }
+                    $data_value = join ' - ', @table;
+                }
+                $xmltags->{$datas->{LABEL_NAME}}[0] = $data_value;
+            } 
 
             push @{$snmp_inventory->{xmlroot}->{CONTENT}->{$snmp_table}},$xmltags;
 
@@ -336,7 +350,7 @@ sub snmp_ip_scan {
             $logger->debug("Scannig $net_to_scan with nmap");
             my $nmaparser = Nmap::Parser->new;
 
-            $nmaparser->parsescan("nmap","-sP",$net_to_scan);
+            $nmaparser->parsescan("nmap","-sn",$net_to_scan);
             for my $host ($nmaparser->all_hosts("up")) {
                my $res=$host->addr;
                $logger->debug("Found $res");
