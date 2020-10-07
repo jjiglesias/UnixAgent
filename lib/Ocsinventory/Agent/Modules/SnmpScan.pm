@@ -130,18 +130,6 @@ sub snmpscan_prolog_reader {
                 }
 
                 if ($_->{'TYPE'} eq 'SNMP_TYPE'){
-                    push @{$self->{snmp_type_condition}},{
-                        TABLE_TYPE_NAME => $_->{TABLE_TYPE_NAME},
-                        CONDITION_OID => $_->{CONDITION_OID},
-                        CONDITION_VALUE => $_->{CONDITION_VALUE}
-                    };
-
-                    push @{$self->{snmp_type_infos}},{
-                        TABLE_TYPE_NAME => $_->{TABLE_TYPE_NAME},
-                        LABEL_NAME => $_->{LABEL_NAME},
-                        OID => $_->{OID}
-                    };
-
                     if (!exists($self->{snmp_type_hash}{$_->{TABLE_TYPE_NAME}})) {
                         $self->{snmp_type_hash}{$_->{TABLE_TYPE_NAME}} = {
                             CONDITION_OID => $_->{CONDITION_OID},
@@ -265,20 +253,30 @@ sub snmpscan_end_handler {
                 $self->{snmp_community}=$comm->{NAME}; 
                 $self->{snmp_version}=$comm->{VERSION};
 
-                LIST_TYPE: foreach $snmp_table (keys %{$self->{snmp_type_hash}}) {
+                LIST_TYPE: foreach my $type (keys %{$self->{snmp_type_hash}}) {
+                    $snmp_table = $type;
                     $snmp_condition_oid = $self->{snmp_type_hash}{$snmp_table}->{CONDITION_OID};
                     $snmp_condition_value = $self->{snmp_type_hash}{$snmp_table}->{CONDITION_VALUE};
                     $oid_condition = $session->get_request(-varbindlist => [$snmp_condition_oid]);
+                    if(!defined $oid_condition) { $logger->debug("JJIR - SNPM Error: " . $session->error() . "(" . $session->error_status() . "); Host: " .$device->{IPADDR}. ", Community: " .$comm->{NAME}. ", Version: " .$comm->{VERSION}. ", Type: " .$snmp_table. ", Requested: " .$snmp_condition_oid. ", Condition value: " .$snmp_condition_value); }
+                    else { $logger->debug("JJIR - Response. Host: " .$device->{IPADDR}. ", Community: " .$comm->{NAME}. ", Version: " .$comm->{VERSION}. ", Type: " .$snmp_table. ", Requested: " .$snmp_condition_oid. ", Got: " .$oid_condition->{$snmp_condition_oid}. ", Condition value: " .$snmp_condition_value); }
                     last LIST_TYPE if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} =~ m/\Q$snmp_condition_value/);
+
+                    # No response from host: Continue to the next SNMP community
+                    next LIST_SNMP if (!defined $oid_condition && $session->error() =~ m/No response from remote host/);
                 }
                 
                 last LIST_SNMP if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} =~ m/\Q$snmp_condition_value/);
                 $session->close;
                 $self->{snmp_session}=undef;
+
+                # If we get responses with one community but we dont' match any condition, we won't try the remaining communities.
+                last LIST_SNMP if (defined $oid_condition);
             }
         }
 
         if (defined $oid_condition && $oid_condition->{$snmp_condition_oid} =~ m/\Q$snmp_condition_value/) {
+            $logger->debug("JJIR - COINCIDENCIA. Host: " .$device->{IPADDR}. ", Community: " .$self->{snmp_community}. ", Version: " .$self->{snmp_version}. ", Type: " .$snmp_table. ", Requested: " .$snmp_condition_oid. ", Got: " .$oid_condition->{$snmp_condition_oid}. ", Condition value: " .$snmp_condition_value);
             $oid_condition = $oid_condition->{$snmp_condition_oid};
             my $xmltags = $common->{xmltags};
             
@@ -290,7 +288,7 @@ sub snmpscan_end_handler {
             my $data;
 
             my $snmp_infos = $self->{snmp_type_hash}{$snmp_table}->{LABELS};
-            $logger->debug("JJIR - snmp_infos: " .Dumper($self->{snmp_infos}));
+            $logger->debug("JJIR - snmp_infos: " .Dumper($snmp_infos));
 
             foreach my $datas (@$snmp_infos) {
                 my $data_value = undef;
